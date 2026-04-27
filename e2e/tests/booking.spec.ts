@@ -3,6 +3,33 @@ import { expect, test } from '@playwright/test'
 import { E2E_EVENT_TYPE_NAME } from '../constants.js'
 
 test.describe('guest booking flow', () => {
+  test('S0: secondary action on confirm returns to time selection', async ({
+    page,
+  }) => {
+    await page.goto('/booking')
+
+    await page.getByRole('link', { name: E2E_EVENT_TYPE_NAME }).click()
+
+    const firstSlot = page
+      .getByRole('listitem')
+      .first()
+      .getByRole('button', { name: /Available/ })
+    await expect(firstSlot).toBeVisible()
+    await firstSlot.click()
+
+    await page.getByRole('button', { name: 'Continue' }).click()
+    await expect(
+      page.getByRole('heading', { name: 'Confirm booking' })
+    ).toBeVisible()
+
+    await page.getByRole('button', { name: 'Change time' }).click()
+
+    await expect(page).toHaveURL(/\/booking\/.+/)
+    await expect(
+      page.getByRole('heading', { level: 1, name: E2E_EVENT_TYPE_NAME })
+    ).toBeVisible()
+  })
+
   test('S1: book a slot from catalog through confirm', async ({ page }) => {
     await page.goto('/booking')
 

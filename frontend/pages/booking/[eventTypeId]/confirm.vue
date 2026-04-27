@@ -125,7 +125,7 @@ async function submit() {
           :disabled="submitting"
           @click="goBackToSlots"
         >
-          {{ t('admin.cancel') }}
+          {{ t('confirm.changeTime') }}
         </UButton>
         <UButton color="primary" :loading="submitting" @click="submit">
           {{ t('confirm.submit') }}
