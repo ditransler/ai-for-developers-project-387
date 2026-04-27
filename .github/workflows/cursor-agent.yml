@@ -5,18 +5,21 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
 
 permissions:
-  contents: read
-  pull-requests: read
-  issues: read
+  contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
   cursor-agent:
     if: |
-      contains(github.event.comment.body, '/cursor') &&
-      github.event.comment.author_association == 'OWNER' &&
+      contains(github.event.comment.body || github.event.review.body || '', '/cursor') &&
+      (github.event.comment.author_association || github.event.review.author_association) == 'OWNER' &&
       (
+        github.event_name == 'pull_request_review' ||
         github.event_name == 'pull_request_review_comment' ||
         github.event_name == 'issue_comment'
       )
@@ -25,7 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          fetch-depth: 0
 
       - name: Install Cursor CLI
         run: |
@@ -33,19 +36,457 @@ jobs:
           echo "$HOME/.cursor/bin" >> "$GITHUB_PATH"
 
       - name: Run Cursor Agent
+        id: cursor_agent
         env:
           # Required secret for Cursor CLI authentication in CI.
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMENT_BODY: ${{ github.event.comment.body || github.event.review.body || '' }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+          THREAD_TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
+          THREAD_BODY: ${{ github.event.issue.body || github.event.pull_request.body }}
+          THREAD_URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
+          COMMENT_URL: ${{ github.event.comment.html_url || github.event.review.html_url || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REVIEW_BODY: ${{ github.event.review.body || '' }}
+          REVIEW_URL: ${{ github.event.review.html_url || '' }}
+          REVIEW_ID: ${{ github.event.review.id || '' }}
+          IS_PULL_REQUEST_ISSUE: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+          IS_PR_CONTEXT: ${{ github.event_name == 'pull_request_review_comment' && 'true' || github.event_name == 'pull_request_review' && 'true' || github.event.issue.pull_request && 'true' || 'false' }}
         run: |
-          agent --trust -p "$(cat <<'EOF'
+          RESPONSE_FILE="$RUNNER_TEMP/cursor-agent-response.md"
+          AGENT_ERROR_FILE="$RUNNER_TEMP/cursor-agent-error.log"
+          AGENT_MODEL_ERROR_FILE="$RUNNER_TEMP/cursor-agent-model-error.log"
+          GH_PR_ERROR_FILE="$RUNNER_TEMP/cursor-gh-pr-error.log"
+          COMMAND_TEXT="$(printf '%s' "$COMMENT_BODY" | sed -E 's#.*\/cursor[[:space:]]*##' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+          PR_NUMBER_EFFECTIVE="$PR_NUMBER"
+          IS_PR_CONTEXT_EFFECTIVE="$IS_PR_CONTEXT"
+          PR_NUMBER_FROM_COMMAND="$(printf '%s' "$COMMAND_TEXT" | sed -nE 's#.*\/pull/([0-9]+).*#\1#p' | head -n 1)"
+          if [ -n "$PR_NUMBER_FROM_COMMAND" ]; then
+            PR_NUMBER_EFFECTIVE="$PR_NUMBER_FROM_COMMAND"
+            IS_PR_CONTEXT_EFFECTIVE="true"
+          fi
+          SUBCOMMAND="$(printf '%s' "$COMMAND_TEXT" | awk '{print tolower($1)}')"
+          COMMAND_ARGS="$(printf '%s' "$COMMAND_TEXT" | sed -E 's/^[^[:space:]]+[[:space:]]*//')"
+
+          run_agent_with_auto_fallback() {
+            local prompt_file="$1"
+            local output_file="$2"
+            local error_file="$3"
+            local model_error_file="$4"
+
+            if agent --model auto --trust -p "$(cat "$prompt_file")" > "$output_file" 2> "$error_file"; then
+              return 0
+            fi
+
+            cp "$error_file" "$model_error_file" || true
+            if agent --trust -p "$(cat "$prompt_file")" > "$output_file" 2> "$error_file"; then
+              return 0
+            fi
+
+            return 1
+          }
+
+          if [ -z "$COMMAND_TEXT" ]; then
+            cat > "$RESPONSE_FILE" <<'EOF'
+          I found `/cursor` command, but no task text after it.
+
+          Try one of these:
+          - `/cursor explain this issue`
+          - `/cursor summarize action items`
+          - `/cursor propose next steps`
+          EOF
+            echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$SUBCOMMAND" = "fix" ]; then
+            if [ "$EVENT_NAME" != "issue_comment" ] || [ "$IS_PULL_REQUEST_ISSUE" = "true" ]; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` is supported only in regular issue comments.
+
+          Please use `/cursor` for PR discussions, or run `/cursor fix` directly in the issue thread.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            BRANCH_NAME="cursor/fix-issue-$ISSUE_NUMBER-${{ github.run_id }}"
+            FIX_REQUEST="$COMMAND_ARGS"
+
+            git config user.name "cursor-agent[bot]"
+            git config user.email "cursor-agent@users.noreply.github.com"
+
+            if ! git checkout -b "$BRANCH_NAME"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't create a working branch for `/cursor fix`.
+          Please retry the command or check workflow logs.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            FIX_PROMPT_FILE="$RUNNER_TEMP/cursor-fix-prompt.md"
+            cat > "$FIX_PROMPT_FILE" <<EOF
+          You are running as a Cursor agent in GitHub Actions.
+          Trigger command: /cursor fix
+          Repository: $REPOSITORY
+          Event: $EVENT_NAME
+          Actor: ${{ github.actor }}
+          Issue number: $ISSUE_NUMBER
+          Issue title:
+          $THREAD_TITLE
+
+          Issue body:
+          $THREAD_BODY
+
+          Triggering comment:
+          $COMMENT_BODY
+
+          Issue URL: $THREAD_URL
+          Triggering comment URL: $COMMENT_URL
+
+          Additional user request text after /cursor fix:
+          $FIX_REQUEST
+
+          Task:
+          - Implement a minimal, safe fix for the issue in this repository.
+          - Update or add tests when the bug is testable.
+          - Keep changes focused and production-ready.
+          - Do not commit or push changes yourself.
+          EOF
+            if ! run_agent_with_auto_fallback "$FIX_PROMPT_FILE" "$RUNNER_TEMP/cursor-fix-agent-output.md" "$AGENT_ERROR_FILE" "$AGENT_MODEL_ERROR_FILE"; then
+              if rg -i -q "usage limit|spend limit|switch to auto" "$AGENT_ERROR_FILE"; then
+                cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete `/cursor fix` because the Cursor model usage limit was reached in CI.
+          Please switch to Auto mode or increase Spend Limit for the API key, then retry.
+          EOF
+              elif rg -i -q "unknown option|unrecognized option|invalid.*model|unsupported.*model" "$AGENT_MODEL_ERROR_FILE"; then
+                cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` tried to force the model to Auto, but this Cursor CLI version doesn't support `--model auto`.
+          Please update Cursor CLI in workflow or retry after CLI upgrade.
+          EOF
+              else
+                cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete `/cursor fix` due to an execution error while preparing changes.
+          Please retry the command or check workflow logs for details.
+          EOF
+              fi
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if git diff --quiet && git diff --cached --quiet; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` completed, but no code changes were produced for this issue.
+          Please add more implementation details and retry.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            git add -A
+            COMMIT_MESSAGE="fix: address issue #$ISSUE_NUMBER via /cursor fix"
+
+            if ! git commit -m "$COMMIT_MESSAGE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` prepared file updates, but commit failed.
+          Please retry the command or review workflow logs.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! git push --set-upstream origin "$BRANCH_NAME"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` committed changes, but push failed.
+          Please retry the command or review repository permissions.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            PR_TITLE="fix: issue #$ISSUE_NUMBER - $THREAD_TITLE"
+            PR_BODY="$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+              "## Summary" \
+              "- Automated fix prepared from issue #$ISSUE_NUMBER via /cursor fix." \
+              "- Changes were generated in CI from issue context and triggering comment." \
+              "" \
+              "## Context" \
+              "- Issue: $THREAD_URL" \
+              "- Trigger comment: $COMMENT_URL")"
+
+            if ! PR_URL="$(gh pr create \
+              --base "$DEFAULT_BRANCH" \
+              --head "$BRANCH_NAME" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY" 2> "$GH_PR_ERROR_FILE")"; then
+              PR_URL=""
+            fi
+
+            if [ -z "$PR_URL" ]; then
+              cat > "$RESPONSE_FILE" <<EOF
+          /cursor fix pushed a branch, but couldn't open a pull request automatically.
+          Please open a PR manually from branch:
+          https://github.com/$REPOSITORY/tree/$BRANCH_NAME
+
+          gh pr create error:
+          $(sed -e 's/^/  /' "$GH_PR_ERROR_FILE" | head -n 20)
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            cat > "$RESPONSE_FILE" <<EOF
+          Prepared a fix for issue #$ISSUE_NUMBER and opened a pull request:
+          $PR_URL
+
+          Review the PR and run your usual checks before merge.
+          EOF
+            echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$IS_PR_CONTEXT_EFFECTIVE" = "true" ]; then
+            if [ -z "$PR_NUMBER_EFFECTIVE" ]; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't detect a pull request number for this `/cursor` request.
+          Please retry in the PR thread.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            PR_DATA_FILE="$RUNNER_TEMP/pr-data.json"
+            if ! gh api "repos/$REPOSITORY/pulls/$PR_NUMBER_EFFECTIVE" > "$PR_DATA_FILE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't load pull request metadata for this `/cursor` request.
+          Please retry or review workflow permissions.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            PR_HEAD_REPO="$(jq -r '.head.repo.full_name // ""' "$PR_DATA_FILE")"
+            PR_HEAD_REF="$(jq -r '.head.ref // ""' "$PR_DATA_FILE")"
+            PR_HEAD_SHA="$(jq -r '.head.sha // ""' "$PR_DATA_FILE")"
+            PR_URL="$(jq -r '.html_url // ""' "$PR_DATA_FILE")"
+
+            if [ -z "$PR_HEAD_REF" ] || [ "$PR_HEAD_REPO" != "$REPOSITORY" ]; then
+              cat > "$RESPONSE_FILE" <<EOF
+          I can update PR branches only when the PR head branch is in this repository.
+
+          PR #$PR_NUMBER_EFFECTIVE head repository: $PR_HEAD_REPO
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            git config user.name "cursor-agent[bot]"
+            git config user.email "cursor-agent@users.noreply.github.com"
+
+            if ! git fetch origin "$PR_HEAD_REF"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't fetch the PR branch for this `/cursor` request.
+          Please retry or check repository permissions.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! git checkout -B "$PR_HEAD_REF" "origin/$PR_HEAD_REF"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't check out the PR branch for this `/cursor` request.
+          Please retry or check workflow logs.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            ISSUE_COMMENTS_FILE="$RUNNER_TEMP/pr-issue-comments.json"
+            REVIEW_COMMENTS_FILE="$RUNNER_TEMP/pr-review-comments.json"
+            REVIEWS_FILE="$RUNNER_TEMP/pr-reviews.json"
+            FEEDBACK_FILE="$RUNNER_TEMP/pr-feedback-context.md"
+
+            gh api "repos/$REPOSITORY/issues/$PR_NUMBER_EFFECTIVE/comments?per_page=100" > "$ISSUE_COMMENTS_FILE" || echo '[]' > "$ISSUE_COMMENTS_FILE"
+            gh api "repos/$REPOSITORY/pulls/$PR_NUMBER_EFFECTIVE/comments?per_page=100" > "$REVIEW_COMMENTS_FILE" || echo '[]' > "$REVIEW_COMMENTS_FILE"
+            gh api "repos/$REPOSITORY/pulls/$PR_NUMBER_EFFECTIVE/reviews?per_page=100" > "$REVIEWS_FILE" || echo '[]' > "$REVIEWS_FILE"
+
+            {
+              echo "## General PR discussion comments (latest)"
+              jq -r '.[] | "- [\(.user.login)] \(.body // "") (\(.html_url // ""))"' "$ISSUE_COMMENTS_FILE" | tail -n 40
+              echo
+              echo "## Line-level review comments (latest)"
+              jq -r '.[] | "- [\(.user.login)] \(.path):\(.line // .original_line // "n/a") -> \(.body // "") (\(.html_url // ""))"' "$REVIEW_COMMENTS_FILE" | tail -n 40
+              echo
+              echo "## Review summaries (latest)"
+              jq -r '.[] | "- [\(.user.login)] state=\(.state // "unknown"): \(.body // "") (\(.html_url // ""))"' "$REVIEWS_FILE" | tail -n 20
+            } > "$FEEDBACK_FILE"
+
+            PR_UPDATE_PROMPT_FILE="$RUNNER_TEMP/cursor-pr-update-prompt.md"
+            cat > "$PR_UPDATE_PROMPT_FILE" <<EOF
           You are running as a Cursor agent in GitHub Actions.
           Trigger command: /cursor
-          Repository: ${{ github.repository }}
-          Event: ${{ github.event_name }}
+          Repository: $REPOSITORY
+          Event: $EVENT_NAME
           Actor: ${{ github.actor }}
-          Comment body:
-          ${{ github.event.comment.body }}
+          Pull request number: $PR_NUMBER_EFFECTIVE
+          Pull request URL: $PR_URL
+          Pull request head branch: $PR_HEAD_REF
+          Pull request head SHA: $PR_HEAD_SHA
+          Thread title:
+          $THREAD_TITLE
 
-          If this is a pull request context, review the current repository state and provide a concise, actionable response for the author.
+          Thread body:
+          $THREAD_BODY
+
+          Triggering comment:
+          $COMMENT_BODY
+
+          Review body (if any):
+          $REVIEW_BODY
+
+          Triggering comment URL: $COMMENT_URL
+          Triggering review URL: $REVIEW_URL
+          Triggering review id: $REVIEW_ID
+
+          User request text after /cursor:
+          $COMMAND_TEXT
+
+          Aggregated review feedback from this PR:
+          $(cat "$FEEDBACK_FILE")
+
+          Task:
+          - Update this existing PR branch to address requested fixes.
+          - Consider both general PR comments and line-level review comments.
+          - Keep the change focused to the request and current PR context.
+          - Update/add tests when needed.
+          - Do not commit or push changes yourself.
           EOF
-          )"
+
+            if ! run_agent_with_auto_fallback "$PR_UPDATE_PROMPT_FILE" "$RUNNER_TEMP/cursor-pr-update-agent-output.md" "$AGENT_ERROR_FILE" "$AGENT_MODEL_ERROR_FILE"; then
+              if rg -i -q "usage limit|spend limit|switch to auto" "$AGENT_ERROR_FILE"; then
+                cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete this PR update because the Cursor model usage limit was reached in CI.
+          Please switch to Auto mode or increase Spend Limit for the API key, then retry.
+          EOF
+              elif rg -i -q "unknown option|unrecognized option|invalid.*model|unsupported.*model" "$AGENT_MODEL_ERROR_FILE"; then
+                cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor` tried to force the model to Auto, but this Cursor CLI version doesn't support `--model auto`.
+          Please update Cursor CLI in workflow or retry after CLI upgrade.
+          EOF
+              else
+                cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete this PR update due to an execution error.
+          Please retry the command or check workflow logs for details.
+          EOF
+              fi
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if git diff --quiet && git diff --cached --quiet; then
+              cat > "$RESPONSE_FILE" <<EOF
+          I reviewed the PR context and comments, but no code changes were necessary for this \`/cursor\` request.
+          If you expected changes, please provide a more specific implementation request.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            git add -A
+            COMMIT_MESSAGE="fix: update PR #$PR_NUMBER_EFFECTIVE via /cursor"
+            if ! git commit -m "$COMMIT_MESSAGE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I prepared PR updates but commit failed.
+          Please retry the command or review workflow logs.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! git push origin "HEAD:$PR_HEAD_REF"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I committed PR updates, but push failed.
+          Please retry the command or review repository permissions.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            cat > "$RESPONSE_FILE" <<EOF
+          Updated PR #$PR_NUMBER_EFFECTIVE with requested changes and pushed a new commit to \`$PR_HEAD_REF\`.
+          I considered both general discussion comments and line-level review feedback.
+
+          PR: $PR_URL
+          EOF
+            echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          DEFAULT_PROMPT_FILE="$RUNNER_TEMP/cursor-default-prompt.md"
+          cat > "$DEFAULT_PROMPT_FILE" <<EOF
+          You are running as a Cursor agent in GitHub Actions.
+          Trigger command: /cursor
+          Repository: $REPOSITORY
+          Event: $EVENT_NAME
+          Actor: ${{ github.actor }}
+          Thread number: $ISSUE_NUMBER
+          Thread title:
+          $THREAD_TITLE
+
+          Thread body:
+          $THREAD_BODY
+
+          Triggering comment:
+          $COMMENT_BODY
+
+          Thread URL: $THREAD_URL
+          Triggering comment URL: $COMMENT_URL
+
+          User request text after /cursor:
+          $COMMAND_TEXT
+
+          Treat the text after /cursor as the user's request.
+          Use the thread context above to fulfill that request.
+          Keep the response concise and actionable.
+          EOF
+          if ! run_agent_with_auto_fallback "$DEFAULT_PROMPT_FILE" "$RESPONSE_FILE" "$AGENT_ERROR_FILE" "$AGENT_MODEL_ERROR_FILE"; then
+            if rg -i -q "usage limit|spend limit|switch to auto" "$AGENT_ERROR_FILE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete the `/cursor` request because the Cursor model usage limit was reached in CI.
+          Please switch to Auto mode or increase Spend Limit for the API key, then retry.
+          EOF
+            elif rg -i -q "unknown option|unrecognized option|invalid.*model|unsupported.*model" "$AGENT_MODEL_ERROR_FILE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor` tried to force the model to Auto, but this Cursor CLI version doesn't support `--model auto`.
+          Please update Cursor CLI in workflow or retry after CLI upgrade.
+          EOF
+            else
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete the `/cursor` request due to an execution error.
+          Please retry the command or check the workflow logs for details.
+          EOF
+            fi
+          fi
+
+          if [ ! -s "$RESPONSE_FILE" ]; then
+            cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't generate a response for this `/cursor` command.
+          Please retry with a more specific instruction.
+          EOF
+          fi
+
+          echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Post Cursor reply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments" \
+            --method POST \
+            --raw-field body="$(cat "${{ steps.cursor_agent.outputs.response_file }}")"
