@@ -209,8 +209,8 @@ jobs:
               "- Changes were generated in CI from issue context and triggering comment." \
               "" \
               "## Context" \
-              "- Issue: $THREAD_URL
-- Trigger comment: $COMMENT_URL")"
+              "- Issue: $THREAD_URL" \
+              "- Trigger comment: $COMMENT_URL")"
 
             if ! PR_URL="$(gh pr create \
               --base "$DEFAULT_BRANCH" \
