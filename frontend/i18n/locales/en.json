@@ -38,6 +38,7 @@
     "subtitle": "Review your selection and add an optional name.",
     "guestName": "Your name (optional)",
     "guestNamePlaceholder": "e.g. Alex",
+    "changeTime": "Change time",
     "submit": "Confirm booking",
     "success": "Booking confirmed",
     "conflict": "That slot was just taken. Please pick another time."
