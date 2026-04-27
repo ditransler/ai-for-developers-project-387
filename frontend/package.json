@@ -1,0 +1,46 @@
+{
+  "name": "calendar-booking-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare && simple-git-hooks",
+    "typegen:api": "openapi-typescript ../api-contract/openapi.yaml -o types/api.generated.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "nuxi typecheck",
+    "verify": "npm run lint && npm run format:check && npm run typecheck"
+  },
+  "dependencies": {
+    "@nuxt/ui": "3.3.7",
+    "@nuxtjs/i18n": "9.5.6",
+    "nuxt": "3.16.2",
+    "vue": "3.5.13",
+    "vue-router": "4.5.0"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "1.15.2",
+    "eslint": "9.39.4",
+    "eslint-config-prettier": "10.1.8",
+    "openapi-typescript": "7.7.0",
+    "prettier": "3.8.2",
+    "simple-git-hooks": "2.13.1",
+    "@types/node": "22.15.3",
+    "typescript": "5.8.2",
+    "vue-tsc": "2.2.10"
+  },
+  "overrides": {
+    "@nuxt/kit": "3.16.2",
+    "@nuxt/schema": "3.16.2",
+    "eslint-flat-config-utils": "2.1.4",
+    "nitropack": "2.13.3"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "npm --prefix frontend run verify"
+  }
+}

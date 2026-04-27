@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CalendarBooking.Api/CalendarBooking.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CalendarBooking.Tests/CalendarBooking.Tests.csproj" />
+  </Folder>
+</Solution>

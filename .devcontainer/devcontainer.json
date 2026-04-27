@@ -1,0 +1,16 @@
+{
+  "name": "Node.js 24 + .NET 10",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteEnv": {
+    "PATH": "/usr/bin:/usr/local/bin:${containerEnv:PATH}"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-dotnettools.csharp", "dbaeumer.vscode-eslint"]
+    }
+  },
+  "postCreateCommand": "dotnet --version && node --version && npm --version && playwright-cli --help"
+}

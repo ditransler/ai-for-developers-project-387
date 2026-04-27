@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: calendar-booking
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /booking

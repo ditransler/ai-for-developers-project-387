@@ -1,0 +1,78 @@
+{
+  "nav": {
+    "brand": "Calendar",
+    "book": "Book",
+    "admin": "Admin"
+  },
+  "landing": {
+    "badge": "Quick call booking",
+    "title": "Calendar",
+    "subtitle": "Book a meeting in a minute: choose an event type and a time that works for you.",
+    "cta": "Book",
+    "featuresTitle": "Features",
+    "feature1": "Pick an event type and a convenient time for your meeting.",
+    "feature2": "Fast booking with confirmation and optional notes.",
+    "feature3": "Manage meeting types and see upcoming bookings in the admin area."
+  },
+  "booking": {
+    "selectTypeTitle": "Select an event type",
+    "selectTypeHint": "Click a card to open the calendar and choose a slot.",
+    "host": "Host",
+    "durationMin": "{n} min",
+    "calendarTitle": "Calendar",
+    "slotStatusTitle": "Slot status",
+    "selectedDate": "Selected date",
+    "selectedTime": "Selected time",
+    "timeNotSelected": "Time not selected",
+    "available": "Available",
+    "booked": "Booked",
+    "back": "Back",
+    "continue": "Continue",
+    "slotsForDay": "{n} available",
+    "noSlotsDay": "No slots",
+    "loadingSlots": "Loading availability…",
+    "loadError": "Could not load availability."
+  },
+  "confirm": {
+    "title": "Confirm booking",
+    "subtitle": "Review your selection and add an optional name.",
+    "guestName": "Your name (optional)",
+    "guestNamePlaceholder": "e.g. Alex",
+    "submit": "Confirm booking",
+    "success": "Booking confirmed",
+    "conflict": "That slot was just taken. Please pick another time."
+  },
+  "admin": {
+    "bookingsTitle": "Upcoming bookings",
+    "bookingsEmpty": "No upcoming bookings.",
+    "eventTypesTitle": "Event types",
+    "eventTypesEmpty": "No event types yet.",
+    "eventTypesEmptyHint": "Create one to start accepting bookings for that format.",
+    "create": "Create",
+    "edit": "Edit",
+    "delete": "Delete",
+    "name": "Name",
+    "description": "Description",
+    "duration": "Duration (minutes)",
+    "namePlaceholder": "e.g. Intro call",
+    "descriptionPlaceholder": "Short summary shown to guests",
+    "id": "ID",
+    "save": "Save",
+    "cancel": "Cancel",
+    "retry": "Retry",
+    "deleteConfirm": "Delete this event type?",
+    "deleteBlocked": "Cannot delete: future bookings exist for this type.",
+    "createTitle": "New event type",
+    "editTitle": "Edit event type",
+    "validationName": "Enter a name.",
+    "validationDurationStep": "Duration must be 15, 30, 45, or 60 minutes."
+  },
+  "errors": {
+    "generic": "Something went wrong.",
+    "validation": "Invalid input.",
+    "notFound": "Not found.",
+    "server": "Server error. Try again later.",
+    "network": "Could not reach the API. Is it running?",
+    "retryHint": "If you use the OpenAPI mock, run `make prism-mock` from the repo root (port 4010)."
+  }
+}

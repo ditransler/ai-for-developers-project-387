@@ -1,0 +1,454 @@
+openapi: 3.0.0
+info:
+  title: Calendar Booking API
+  description: |-
+    There is one predefined owner profile (not modeled as a resource). Guests have no accounts.
+
+    **Booking window:** available slots are computed for **14 calendar days** starting from the server’s current local date (inclusive). Guests may only book within that window.
+
+    **Occupancy:** at most one booking may cover any instant in time. Overlaps are forbidden even across different event types.
+  version: 0.0.0
+tags:
+  - name: Guest
+  - name: Owner admin
+paths:
+  /admin/bookings:
+    get:
+      operationId: AdminRoutes_listUpcomingBookings
+      description: Upcoming bookings for all event types, one list ordered by `startAt` ascending.
+      parameters: []
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Booking'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Owner admin
+  /admin/event-types:
+    get:
+      operationId: AdminRoutes_listEventTypesAdmin
+      description: List event types for management.
+      parameters: []
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EventType'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Owner admin
+    post:
+      operationId: AdminRoutes_createEventType
+      description: Create an event type.
+      parameters: []
+      responses:
+        '201':
+          description: The request has succeeded and a new resource has been created as a result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventType'
+        '400':
+          description: The server could not understand the request due to invalid syntax.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequest'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Owner admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventTypeCreate'
+  /admin/event-types/{eventTypeId}:
+    patch:
+      operationId: AdminRoutes_updateEventType
+      description: Update an event type.
+      parameters:
+        - name: eventTypeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventType'
+        '400':
+          description: The server could not understand the request due to invalid syntax.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequest'
+        '404':
+          description: The server cannot find the requested resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFound'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Owner admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventTypeUpdate'
+    delete:
+      operationId: AdminRoutes_deleteEventType
+      description: Delete an event type. Implementations may reject if future bookings exist.
+      parameters:
+        - name: eventTypeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: There is no content to send for this request, but the headers may be useful.
+        '404':
+          description: The server cannot find the requested resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFound'
+        '409':
+          description: The request conflicts with the current state of the server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteEventTypeConflict'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Owner admin
+  /public/bookings:
+    post:
+      operationId: GuestRoutes_createBooking
+      description: Create a booking. Fails if the interval overlaps any existing booking.
+      parameters: []
+      responses:
+        '201':
+          description: The request has succeeded and a new resource has been created as a result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          description: The server could not understand the request due to invalid syntax.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequest'
+        '404':
+          description: The server cannot find the requested resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFound'
+        '409':
+          description: The request conflicts with the current state of the server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Conflict'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Guest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+  /public/event-types:
+    get:
+      operationId: GuestRoutes_listEventTypes
+      description: List event types (name, description, duration) for the booking options page.
+      parameters: []
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EventType'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Guest
+  /public/event-types/{eventTypeId}/available-slots:
+    get:
+      operationId: GuestRoutes_listAvailableSlots
+      description: |-
+        Free slots for the given type within the default **14-day** booking window from the server’s current date (inclusive).
+
+        Slots honor `durationMinutes`, exclude time covered by **any** booking (all types), and align with `CreateBookingRequest.startAt`.
+      parameters:
+        - name: eventTypeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The request has succeeded.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TimeSlot'
+              example:
+                - startAt: '2026-04-22T15:00:00.000Z'
+                  endAt: '2026-04-22T15:15:00.000Z'
+                - startAt: '2026-04-22T16:00:00.000Z'
+                  endAt: '2026-04-22T16:15:00.000Z'
+        '404':
+          description: The server cannot find the requested resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFound'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalError'
+      tags:
+        - Guest
+components:
+  schemas:
+    BadRequest:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - SLOT_OUTSIDE_WINDOW
+            - SLOT_MISMATCH
+        message:
+          type: string
+    Booking:
+      type: object
+      required:
+        - id
+        - eventTypeId
+        - eventTypeName
+        - startAt
+        - endAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventTypeId:
+          type: string
+          format: uuid
+        eventTypeName:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+        guestDisplayName:
+          type: string
+      description: Confirmed booking on [startAt, endAt).
+      example:
+        id: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+        eventTypeId: 497f6eca-6276-4993-bfeb-53cbbbba6f08
+        eventTypeName: Product demo
+        startAt: '2026-04-22T15:00:00.000Z'
+        endAt: '2026-04-22T15:15:00.000Z'
+        guestDisplayName: Alex Kim
+    Conflict:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - SLOT_OCCUPIED
+        message:
+          type: string
+    CreateBookingRequest:
+      type: object
+      required:
+        - eventTypeId
+        - startAt
+      properties:
+        eventTypeId:
+          type: string
+          format: uuid
+        startAt:
+          type: string
+          format: date-time
+        guestDisplayName:
+          type: string
+          description: Optional label in the owner’s meeting list.
+      description: Guest books a slot. `startAt` must match a returned free slot start for that event type.
+    DeleteEventTypeConflict:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          enum:
+            - FUTURE_BOOKINGS_EXIST
+        message:
+          type: string
+    EventDurationMinutes:
+      type: number
+      enum:
+        - 15
+        - 30
+        - 45
+        - 60
+      description: 'Allowed slot length: quarter-hour blocks up to one hour (for Prism mocks and real APIs).'
+    EventType:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - durationMinutes
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        durationMinutes:
+          allOf:
+            - $ref: '#/components/schemas/EventDurationMinutes'
+          description: Duration of one slot, in minutes (15, 30, 45, or 60 only).
+      description: 'Bookable meeting template: identity, copy, and slot length.'
+      example:
+        id: 497f6eca-6276-4993-bfeb-53cbbbba6f08
+        name: Product demo
+        description: A 15-minute walkthrough for new customers.
+        durationMinutes: 15
+    EventTypeCreate:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - durationMinutes
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        durationMinutes:
+          $ref: '#/components/schemas/EventDurationMinutes'
+      description: Create an event type.
+    EventTypeUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        durationMinutes:
+          $ref: '#/components/schemas/EventDurationMinutes'
+      description: Partial update for an event type.
+    InternalError:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+    NotFound:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+    TimeSlot:
+      type: object
+      required:
+        - startAt
+        - endAt
+      properties:
+        startAt:
+          type: string
+          format: date-time
+        endAt:
+          type: string
+          format: date-time
+      description: A free interval the guest may book.
+      example:
+        startAt: '2026-04-22T15:00:00.000Z'
+        endAt: '2026-04-22T15:15:00.000Z'

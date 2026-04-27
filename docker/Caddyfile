@@ -1,0 +1,11 @@
+:{$PORT}
+
+handle /public/* {
+	reverse_proxy 127.0.0.1:5005
+}
+
+handle /admin/* {
+	reverse_proxy 127.0.0.1:5005
+}
+
+reverse_proxy 127.0.0.1:3000

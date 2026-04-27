@@ -1,0 +1,15 @@
+{
+  "name": "calendar-booking",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tsp:compile": "tsp compile .",
+    "tsp:openapi": "tsp compile . --emit @typespec/openapi3"
+  },
+  "devDependencies": {
+    "@typespec/compiler": "0.66.0",
+    "@typespec/http": "0.66.0",
+    "@typespec/rest": "0.66.0",
+    "@typespec/openapi3": "0.66.0"
+  }
+}
