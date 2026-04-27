@@ -7,8 +7,8 @@ on:
     types: [created]
 
 permissions:
-  contents: read
-  pull-requests: read
+  contents: write
+  pull-requests: write
   issues: write
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          fetch-depth: 0
 
       - name: Install Cursor CLI
         run: |
@@ -37,15 +37,22 @@ jobs:
         env:
           # Required secret for Cursor CLI authentication in CI.
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           THREAD_TITLE: ${{ github.event.issue.title || github.event.pull_request.title }}
           THREAD_BODY: ${{ github.event.issue.body || github.event.pull_request.body }}
           THREAD_URL: ${{ github.event.issue.html_url || github.event.pull_request.html_url }}
           COMMENT_URL: ${{ github.event.comment.html_url }}
+          EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IS_PULL_REQUEST_ISSUE: ${{ github.event.issue.pull_request && 'true' || 'false' }}
         run: |
           RESPONSE_FILE="$RUNNER_TEMP/cursor-agent-response.md"
           COMMAND_TEXT="$(printf '%s' "$COMMENT_BODY" | sed -E 's#.*\/cursor[[:space:]]*##' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+          SUBCOMMAND="$(printf '%s' "$COMMAND_TEXT" | awk '{print tolower($1)}')"
+          COMMAND_ARGS="$(printf '%s' "$COMMAND_TEXT" | sed -E 's/^[^[:space:]]+[[:space:]]*//')"
 
           if [ -z "$COMMAND_TEXT" ]; then
             cat > "$RESPONSE_FILE" <<'EOF'
@@ -60,11 +67,144 @@ jobs:
             exit 0
           fi
 
+          if [ "$SUBCOMMAND" = "fix" ]; then
+            if [ "$EVENT_NAME" != "issue_comment" ] || [ "$IS_PULL_REQUEST_ISSUE" = "true" ]; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` is supported only in regular issue comments.
+
+          Please use `/cursor` for PR discussions, or run `/cursor fix` directly in the issue thread.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            BRANCH_NAME="cursor/fix-issue-$ISSUE_NUMBER-${{ github.run_id }}"
+            FIX_REQUEST="$COMMAND_ARGS"
+
+            git config user.name "cursor-agent[bot]"
+            git config user.email "cursor-agent@users.noreply.github.com"
+
+            if ! git checkout -b "$BRANCH_NAME"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't create a working branch for `/cursor fix`.
+          Please retry the command or check workflow logs.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! agent --trust -p "$(cat <<EOF
+          You are running as a Cursor agent in GitHub Actions.
+          Trigger command: /cursor fix
+          Repository: $REPOSITORY
+          Event: $EVENT_NAME
+          Actor: ${{ github.actor }}
+          Issue number: $ISSUE_NUMBER
+          Issue title:
+          $THREAD_TITLE
+
+          Issue body:
+          $THREAD_BODY
+
+          Triggering comment:
+          $COMMENT_BODY
+
+          Issue URL: $THREAD_URL
+          Triggering comment URL: $COMMENT_URL
+
+          Additional user request text after /cursor fix:
+          $FIX_REQUEST
+
+          Task:
+          - Implement a minimal, safe fix for the issue in this repository.
+          - Update or add tests when the bug is testable.
+          - Keep changes focused and production-ready.
+          - Do not commit or push changes yourself.
+          EOF
+            )" > "$RUNNER_TEMP/cursor-fix-agent-output.md"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete `/cursor fix` due to an execution error while preparing changes.
+          Please retry the command or check workflow logs for details.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if git diff --quiet && git diff --cached --quiet; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` completed, but no code changes were produced for this issue.
+          Please add more implementation details and retry.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            git add -A
+            COMMIT_MESSAGE="fix: address issue #$ISSUE_NUMBER via /cursor fix"
+
+            if ! git commit -m "$COMMIT_MESSAGE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` prepared file updates, but commit failed.
+          Please retry the command or review workflow logs.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! git push --set-upstream origin "$BRANCH_NAME"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` committed changes, but push failed.
+          Please retry the command or review repository permissions.
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            PR_TITLE="fix: issue #$ISSUE_NUMBER - $THREAD_TITLE"
+            PR_BODY="$(cat <<EOF
+          ## Summary
+          - Automated fix prepared from issue #$ISSUE_NUMBER via \`/cursor fix\`.
+          - Changes were generated in CI from issue context and triggering comment.
+
+          ## Context
+          - Issue: $THREAD_URL
+          - Trigger comment: $COMMENT_URL
+          EOF
+          )"
+
+            if ! PR_URL="$(gh pr create \
+              --base "$DEFAULT_BRANCH" \
+              --head "$BRANCH_NAME" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY" 2>/dev/null)"; then
+              PR_URL=""
+            fi
+
+            if [ -z "$PR_URL" ]; then
+              cat > "$RESPONSE_FILE" <<EOF
+          `/cursor fix` pushed a branch, but couldn't open a pull request automatically.
+          Please open a PR manually from branch:
+          https://github.com/$REPOSITORY/tree/$BRANCH_NAME
+          EOF
+              echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            cat > "$RESPONSE_FILE" <<EOF
+          Prepared a fix for issue #$ISSUE_NUMBER and opened a pull request:
+          $PR_URL
+
+          Review the PR and run your usual checks before merge.
+          EOF
+            echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if ! agent --trust -p "$(cat <<EOF
           You are running as a Cursor agent in GitHub Actions.
           Trigger command: /cursor
-          Repository: ${{ github.repository }}
-          Event: ${{ github.event_name }}
+          Repository: $REPOSITORY
+          Event: $EVENT_NAME
           Actor: ${{ github.actor }}
           Thread number: $ISSUE_NUMBER
           Thread title:
