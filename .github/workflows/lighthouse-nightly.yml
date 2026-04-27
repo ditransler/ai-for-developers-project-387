@@ -1,0 +1,224 @@
+name: Lighthouse Nightly
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: make frontend-install
+
+      - name: Build frontend
+        run: make frontend-build
+
+      - name: Install Lighthouse CI CLI
+        run: npm install -g @lhci/cli@0.15.x
+
+      - name: Start Prism API mock
+        run: |
+          make prism-mock > prism.log 2>&1 &
+          echo $! > prism.pid
+
+      - name: Wait for Prism API mock
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:4010/public/event-types > /dev/null; then
+              echo "Prism API mock is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Prism API mock failed to start in time"
+          exit 1
+
+      - name: Run Lighthouse CI
+        id: lhci
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          lhci autorun 2>&1 | tee lhci.log
+
+      - name: Build morning summary
+        if: always()
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const path = require("path");
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const runConclusion = "${{ steps.lhci.outcome }}";
+          const trigger = "${{ github.event_name }}";
+          const runDate = new Date().toISOString();
+
+          const root = process.cwd();
+          const lighthouseDir = path.join(root, ".lighthouseci");
+          const logPath = path.join(root, "lhci.log");
+          const reportPath = path.join(root, "lhci-report.md");
+          const reports = [];
+          const reportLinks = [];
+          const requiredFixes = [];
+          const warnings = [];
+          const seenReportLinks = new Set();
+          const addReportLink = (url) => {
+            if (!url || seenReportLinks.has(url)) {
+              return;
+            }
+            seenReportLinks.add(url);
+            reportLinks.push(url);
+          };
+
+          const pushLine = (line = "") => fs.appendFileSync(reportPath, `${line}\n`);
+
+          pushLine("# Lighthouse morning report");
+          pushLine("");
+          pushLine(`- Trigger: \`${trigger}\``);
+          pushLine(`- Run date (UTC): \`${runDate}\``);
+          pushLine(`- Lighthouse job result: \`${runConclusion}\``);
+          pushLine("");
+
+          if (fs.existsSync(lighthouseDir)) {
+            const files = fs.readdirSync(lighthouseDir, { withFileTypes: true });
+            for (const entry of files) {
+              if (!entry.isFile() || !entry.name.startsWith("manifest-") || !entry.name.endsWith(".json")) {
+                continue;
+              }
+
+              const manifestPath = path.join(lighthouseDir, entry.name);
+              const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+              for (const item of manifest) {
+                const summaryUrl = item.summary && /^https?:\/\//.test(item.summary) ? item.summary : null;
+                const htmlUrl = item.htmlPath && /^https?:\/\//.test(item.htmlPath) ? item.htmlPath : null;
+                reports.push({
+                  url: item.url,
+                  summary: item.summary || item.htmlPath,
+                });
+                if (summaryUrl) {
+                  addReportLink(summaryUrl);
+                } else if (htmlUrl) {
+                  addReportLink(htmlUrl);
+                }
+              }
+            }
+          }
+
+          if (fs.existsSync(logPath)) {
+            const log = fs.readFileSync(logPath, "utf8");
+            const cleanLog = log
+              .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+              .replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s?/gm, "");
+
+            const reportPattern = /Open the report at (https?:\/\/[^\s]+)/g;
+            let reportMatch;
+            while ((reportMatch = reportPattern.exec(cleanLog)) !== null) {
+              addReportLink(reportMatch[1].trim());
+            }
+
+            const failurePattern = /✘\s+([^\n]+?)\s+failure[^\n]*\n\s+([^\n]+)/g;
+            let failureMatch;
+            while ((failureMatch = failurePattern.exec(cleanLog)) !== null) {
+              const audit = failureMatch[1].trim();
+              const title = failureMatch[2].trim();
+              requiredFixes.push(`- ${title} (\`${audit}\`)`);
+            }
+
+            const warningPattern = /⚠️\s+([^\n]+?)\s+warning[^\n]*\n\s+([^\n]+)/g;
+            let warningMatch;
+            while ((warningMatch = warningPattern.exec(cleanLog)) !== null) {
+              const audit = warningMatch[1].trim();
+              const title = warningMatch[2].trim();
+              warnings.push(`- ${title} (\`${audit}\`)`);
+            }
+          }
+
+          if (reportLinks.length > 0) {
+            pushLine("## Report links");
+            for (const link of reportLinks) {
+              pushLine(`- ${link}`);
+            }
+            pushLine("");
+          } else if (reports.length > 0) {
+            pushLine("## Report links");
+            for (const report of reports) {
+              const url = report.url || "Unknown URL";
+              if (report.summary && /^https?:\/\//.test(report.summary)) {
+                pushLine(`- ${url}: ${report.summary}`);
+              } else if (report.summary) {
+                pushLine(`- ${url}: artifact file \`${report.summary}\``);
+              } else {
+                pushLine(`- ${url}: no summary link available`);
+              }
+            }
+            pushLine("");
+          } else {
+            pushLine("## Report links");
+            pushLine("- No report links were found. Check workflow logs and uploaded artifacts.");
+            pushLine("");
+          }
+
+          pushLine("## Required fixes");
+          if (requiredFixes.length > 0) {
+            for (const fix of [...new Set(requiredFixes)]) {
+              pushLine(fix);
+            }
+          } else {
+            pushLine("- No fixes required.");
+          }
+          pushLine("");
+
+          pushLine("## Warnings");
+          if (warnings.length > 0) {
+            for (const warning of [...new Set(warnings)]) {
+              pushLine(warning);
+            }
+          } else {
+            pushLine("- No warnings.");
+          }
+          pushLine("");
+
+          pushLine("## Team action");
+          pushLine("- Review linked Lighthouse reports in the morning.");
+          pushLine("- If `Required fixes` is not empty, create implementation tasks and prioritize regressions.");
+
+          fs.copyFileSync(reportPath, summaryPath);
+          EOF
+
+      - name: Upload Lighthouse artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-nightly-${{ github.run_number }}
+          path: |
+            .lighthouseci
+            lhci.log
+            lhci-report.md
+            prism.log
+          if-no-files-found: warn
+
+      - name: Stop Prism API mock
+        if: always()
+        run: |
+          if [ -f prism.pid ]; then
+            kill "$(cat prism.pid)" || true
+          fi

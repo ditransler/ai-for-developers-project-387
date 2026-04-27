@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help tsp-compile tsp-openapi prism-mock frontend-install frontend-dev frontend-build frontend-preview \
+.PHONY: help tsp-compile tsp-openapi prism-mock frontend-install frontend-dev frontend-build frontend-preview frontend-preview-only \
 	backend-restore backend-build backend-run backend-watch backend-test backend-format backend-format-check \
 	e2e e2e-verify
 
@@ -13,6 +13,7 @@ help:
 	@echo "  make frontend-dev      - nuxi dev (long-running); often pair with make prism-mock"
 	@echo "  make frontend-build    - nuxi production build (frontend/)"
 	@echo "  make frontend-preview  - production build then nuxi preview (avoids stale .output)"
+	@echo "  make frontend-preview-only - nuxi preview without rebuilding (use after frontend-build)"
 	@echo "  make backend-restore  - dotnet restore (backend/CalendarBooking.slnx)"
 	@echo "  make backend-build    - dotnet build (backend/CalendarBooking.slnx)"
 	@echo "  make backend-run      - dotnet run the API (default port from launchSettings, 5005)"
@@ -44,6 +45,10 @@ frontend-build:
 # Rebuild, then serve .output (required after lockfile/override or Nitro changes)
 frontend-preview: frontend-build
 	npm --prefix frontend run preview
+
+# Serve existing .output without rebuilding (CI-friendly when build already done)
+frontend-preview-only:
+	npm --prefix frontend run preview -- --host="$${NUXT_HOST:-127.0.0.1}" --port="$${NUXT_PORT:-3000}"
 
 BACKEND_SLN := backend/CalendarBooking.slnx
 BACKEND_PROJ := backend/src/CalendarBooking.Api/CalendarBooking.Api.csproj
