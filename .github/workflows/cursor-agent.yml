@@ -52,6 +52,7 @@ jobs:
           RESPONSE_FILE="$RUNNER_TEMP/cursor-agent-response.md"
           AGENT_ERROR_FILE="$RUNNER_TEMP/cursor-agent-error.log"
           AGENT_MODEL_ERROR_FILE="$RUNNER_TEMP/cursor-agent-model-error.log"
+          GH_PR_ERROR_FILE="$RUNNER_TEMP/cursor-gh-pr-error.log"
           COMMAND_TEXT="$(printf '%s' "$COMMENT_BODY" | sed -E 's#.*\/cursor[[:space:]]*##' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
           SUBCOMMAND="$(printf '%s' "$COMMAND_TEXT" | awk '{print tolower($1)}')"
           COMMAND_ARGS="$(printf '%s' "$COMMAND_TEXT" | sed -E 's/^[^[:space:]]+[[:space:]]*//')"
@@ -194,30 +195,31 @@ jobs:
             fi
 
             PR_TITLE="fix: issue #$ISSUE_NUMBER - $THREAD_TITLE"
-            PR_BODY="$(cat <<EOF
-          ## Summary
-          - Automated fix prepared from issue #$ISSUE_NUMBER via \`/cursor fix\`.
-          - Changes were generated in CI from issue context and triggering comment.
-
-          ## Context
-          - Issue: $THREAD_URL
-          - Trigger comment: $COMMENT_URL
-          EOF
-          )"
+            PR_BODY="$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
+              "## Summary" \
+              "- Automated fix prepared from issue #$ISSUE_NUMBER via /cursor fix." \
+              "- Changes were generated in CI from issue context and triggering comment." \
+              "" \
+              "## Context" \
+              "- Issue: $THREAD_URL
+- Trigger comment: $COMMENT_URL")"
 
             if ! PR_URL="$(gh pr create \
               --base "$DEFAULT_BRANCH" \
               --head "$BRANCH_NAME" \
               --title "$PR_TITLE" \
-              --body "$PR_BODY" 2>/dev/null)"; then
+              --body "$PR_BODY" 2> "$GH_PR_ERROR_FILE")"; then
               PR_URL=""
             fi
 
             if [ -z "$PR_URL" ]; then
               cat > "$RESPONSE_FILE" <<EOF
-          `/cursor fix` pushed a branch, but couldn't open a pull request automatically.
+          /cursor fix pushed a branch, but couldn't open a pull request automatically.
           Please open a PR manually from branch:
           https://github.com/$REPOSITORY/tree/$BRANCH_NAME
+
+          gh pr create error:
+          $(sed -e 's/^/  /' "$GH_PR_ERROR_FILE" | head -n 20)
           EOF
               echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
               exit 0
