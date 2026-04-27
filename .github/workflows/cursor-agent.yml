@@ -50,9 +50,29 @@ jobs:
           IS_PULL_REQUEST_ISSUE: ${{ github.event.issue.pull_request && 'true' || 'false' }}
         run: |
           RESPONSE_FILE="$RUNNER_TEMP/cursor-agent-response.md"
+          AGENT_ERROR_FILE="$RUNNER_TEMP/cursor-agent-error.log"
+          AGENT_MODEL_ERROR_FILE="$RUNNER_TEMP/cursor-agent-model-error.log"
           COMMAND_TEXT="$(printf '%s' "$COMMENT_BODY" | sed -E 's#.*\/cursor[[:space:]]*##' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
           SUBCOMMAND="$(printf '%s' "$COMMAND_TEXT" | awk '{print tolower($1)}')"
           COMMAND_ARGS="$(printf '%s' "$COMMAND_TEXT" | sed -E 's/^[^[:space:]]+[[:space:]]*//')"
+
+          run_agent_with_auto_fallback() {
+            local prompt_file="$1"
+            local output_file="$2"
+            local error_file="$3"
+            local model_error_file="$4"
+
+            if agent --model auto --trust -p "$(cat "$prompt_file")" > "$output_file" 2> "$error_file"; then
+              return 0
+            fi
+
+            cp "$error_file" "$model_error_file" || true
+            if agent --trust -p "$(cat "$prompt_file")" > "$output_file" 2> "$error_file"; then
+              return 0
+            fi
+
+            return 1
+          }
 
           if [ -z "$COMMAND_TEXT" ]; then
             cat > "$RESPONSE_FILE" <<'EOF'
@@ -93,7 +113,8 @@ jobs:
               exit 0
             fi
 
-            if ! agent --trust -p "$(cat <<EOF
+            FIX_PROMPT_FILE="$RUNNER_TEMP/cursor-fix-prompt.md"
+            cat > "$FIX_PROMPT_FILE" <<EOF
           You are running as a Cursor agent in GitHub Actions.
           Trigger command: /cursor fix
           Repository: $REPOSITORY
@@ -121,11 +142,23 @@ jobs:
           - Keep changes focused and production-ready.
           - Do not commit or push changes yourself.
           EOF
-            )" > "$RUNNER_TEMP/cursor-fix-agent-output.md"; then
-              cat > "$RESPONSE_FILE" <<'EOF'
+            if ! run_agent_with_auto_fallback "$FIX_PROMPT_FILE" "$RUNNER_TEMP/cursor-fix-agent-output.md" "$AGENT_ERROR_FILE" "$AGENT_MODEL_ERROR_FILE"; then
+              if rg -i -q "usage limit|spend limit|switch to auto" "$AGENT_ERROR_FILE"; then
+                cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete `/cursor fix` because the Cursor model usage limit was reached in CI.
+          Please switch to Auto mode or increase Spend Limit for the API key, then retry.
+          EOF
+              elif rg -i -q "unknown option|unrecognized option|invalid.*model|unsupported.*model" "$AGENT_MODEL_ERROR_FILE"; then
+                cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor fix` tried to force the model to Auto, but this Cursor CLI version doesn't support `--model auto`.
+          Please update Cursor CLI in workflow or retry after CLI upgrade.
+          EOF
+              else
+                cat > "$RESPONSE_FILE" <<'EOF'
           I couldn't complete `/cursor fix` due to an execution error while preparing changes.
           Please retry the command or check workflow logs for details.
           EOF
+              fi
               echo "response_file=$RESPONSE_FILE" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -200,7 +233,8 @@ jobs:
             exit 0
           fi
 
-          if ! agent --trust -p "$(cat <<EOF
+          DEFAULT_PROMPT_FILE="$RUNNER_TEMP/cursor-default-prompt.md"
+          cat > "$DEFAULT_PROMPT_FILE" <<EOF
           You are running as a Cursor agent in GitHub Actions.
           Trigger command: /cursor
           Repository: $REPOSITORY
@@ -226,11 +260,23 @@ jobs:
           Use the thread context above to fulfill that request.
           Keep the response concise and actionable.
           EOF
-          )" > "$RESPONSE_FILE"; then
-            cat > "$RESPONSE_FILE" <<'EOF'
+          if ! run_agent_with_auto_fallback "$DEFAULT_PROMPT_FILE" "$RESPONSE_FILE" "$AGENT_ERROR_FILE" "$AGENT_MODEL_ERROR_FILE"; then
+            if rg -i -q "usage limit|spend limit|switch to auto" "$AGENT_ERROR_FILE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          I couldn't complete the `/cursor` request because the Cursor model usage limit was reached in CI.
+          Please switch to Auto mode or increase Spend Limit for the API key, then retry.
+          EOF
+            elif rg -i -q "unknown option|unrecognized option|invalid.*model|unsupported.*model" "$AGENT_MODEL_ERROR_FILE"; then
+              cat > "$RESPONSE_FILE" <<'EOF'
+          `/cursor` tried to force the model to Auto, but this Cursor CLI version doesn't support `--model auto`.
+          Please update Cursor CLI in workflow or retry after CLI upgrade.
+          EOF
+            else
+              cat > "$RESPONSE_FILE" <<'EOF'
           I couldn't complete the `/cursor` request due to an execution error.
           Please retry the command or check the workflow logs for details.
           EOF
+            fi
           fi
 
           if [ ! -s "$RESPONSE_FILE" ]; then
